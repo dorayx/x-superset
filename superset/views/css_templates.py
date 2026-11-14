@@ -14,33 +14,27 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from flask_appbuilder.api import expose
 from flask_appbuilder.models.sqla.interface import SQLAInterface
-from flask_babel import lazy_gettext as _
+from flask_appbuilder.security.decorators import has_access
 
-from superset.constants import RouteMethod
+from superset.constants import MODEL_VIEW_RW_METHOD_PERMISSION_MAP, RouteMethod
 from superset.models import core as models
+from superset.superset_typing import FlaskResponse
 from superset.views.base import DeleteMixin, SupersetModelView
 
 
 class CssTemplateModelView(  # pylint: disable=too-many-ancestors
-    SupersetModelView, DeleteMixin
+    SupersetModelView,
+    DeleteMixin,
 ):
     datamodel = SQLAInterface(models.CssTemplate)
-    include_route_methods = RouteMethod.CRUD_SET
+    include_route_methods = RouteMethod.LIST
 
-    list_title = _("CSS Templates")
-    show_title = _("Show CSS Template")
-    add_title = _("Add CSS Template")
-    edit_title = _("Edit CSS Template")
+    class_permission_name = "CssTemplate"
+    method_permission_name = MODEL_VIEW_RW_METHOD_PERMISSION_MAP
 
-    list_columns = ["template_name"]
-    edit_columns = ["template_name", "css"]
-    add_columns = edit_columns
-    label_columns = {"template_name": _("Template Name")}
-
-
-class CssTemplateAsyncModelView(  # pylint: disable=too-many-ancestors
-    CssTemplateModelView
-):
-    include_route_methods = {RouteMethod.API_READ}
-    list_columns = ["template_name", "css"]
+    @expose("/list/")
+    @has_access
+    def list(self) -> FlaskResponse:
+        return super().render_app_template()

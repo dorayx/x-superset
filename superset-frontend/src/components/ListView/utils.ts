@@ -16,8 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Column,
   useFilters,
   usePagination,
   useRowSelect,
@@ -25,94 +26,168 @@ import {
   useSortBy,
   useTable,
 } from 'react-table';
+import type { ListViewColumn } from '@superset-ui/core/components/TableCollection';
 
 import {
-  JsonParam,
   NumberParam,
   StringParam,
   useQueryParams,
+  QueryParamConfig,
 } from 'use-query-params';
 
-import { isEqual } from 'lodash';
-import { PartialStylesConfig } from 'src/components/Select';
+import rison from 'rison';
+import { isEqual } from 'lodash-es';
 import {
-  FetchDataConfig,
-  Filter,
-  FilterValue,
+  ListViewFetchDataConfig as FetchDataConfig,
+  ListViewFilter as Filter,
+  ListViewFilterValue as FilterValue,
+  InnerFilterValue,
   InternalFilter,
   SortColumn,
+  ViewModeType,
 } from './types';
+
+type QueryFilterState = {
+  [id: string]: FilterValue['value'];
+};
+
+// Define custom RisonParam for proper encoding/decoding; note that
+// %, &, +, and # must be encoded to avoid breaking the url
+const RisonParam: QueryParamConfig<
+  QueryFilterState | undefined,
+  QueryFilterState | undefined
+> = {
+  encode: data => {
+    if (data === undefined || data === null) return undefined;
+
+    const cleanData = JSON.parse(
+      JSON.stringify(data, (key, value) =>
+        value === undefined ? null : value,
+      ),
+    );
+
+    return rison
+      .encode(cleanData)
+      .replace(/%/g, '%25')
+      .replace(/&/g, '%26')
+      .replace(/\+/g, '%2B')
+      .replace(/#/g, '%23');
+  },
+  decode: (dataStr?: string | string[]) =>
+    dataStr === undefined || Array.isArray(dataStr)
+      ? undefined
+      : (rison.decode(dataStr) as QueryFilterState),
+};
+
+export const SELECT_WIDTH = 176;
+export const RANGE_WIDTH = 300;
+export const WIDER_DROPDOWN_WIDTH = '300px';
 
 export class ListViewError extends Error {
   name = 'ListViewError';
 }
 
-// removes element from a list, returns new list
-export function removeFromList(list: any[], index: number): any[] {
-  return list.filter((_, i) => index !== i);
-}
-
 // apply update to elements of object list, returns new list
-function updateInList(list: any[], index: number, update: any): any[] {
+function updateInList<T>(list: T[], index: number, update: Partial<T>): T[] {
   const element = list.find((_, i) => index === i);
 
   return [
     ...list.slice(0, index),
-    { ...element, ...update },
+    { ...element, ...update } as T,
     ...list.slice(index + 1),
   ];
 }
 
-function mergeCreateFilterValues(list: Filter[], updateList: FilterValue[]) {
-  return list.map(({ id, operator }) => {
-    const update = updateList.find(obj => obj.id === id);
+function mergeCreateFilterValues(list: Filter[], updateObj: QueryFilterState) {
+  return list.map(({ id, urlDisplay, operator }) => {
+    const currentFilterId = urlDisplay || id;
+    const update = updateObj[currentFilterId];
 
-    return { id, operator, value: update?.value };
+    return { id, urlDisplay, operator, value: update };
   });
 }
 
 // convert filters from UI objects to data objects
 export function convertFilters(fts: InternalFilter[]): FilterValue[] {
   return fts
-    .filter(f => typeof f.value !== 'undefined')
-    .map(({ value, operator, id }) => ({ value, operator, id }));
+    .filter(
+      f =>
+        !(
+          typeof f.value === 'undefined' ||
+          (Array.isArray(f.value) && !f.value.length)
+        ),
+    )
+    .flatMap(({ value, operator, id }) => {
+      // handle between filter using 2 api filters
+      if (operator === 'between' && Array.isArray(value)) {
+        return [
+          {
+            value: value[0],
+            operator: 'gt',
+            id,
+          },
+          {
+            value: value[1],
+            operator: 'lt',
+            id,
+          },
+        ];
+      }
+      return {
+        value,
+        operator,
+        id,
+      };
+    });
 }
 
-export function extractInputValue(inputType: Filter['input'], event: any) {
-  if (!inputType || inputType === 'text') {
-    return event.currentTarget.value;
-  }
-  if (inputType === 'checkbox') {
-    return event.currentTarget.checked;
-  }
+// convertFilters but to handle new decoded rison format
+export function convertFiltersRison(
+  filterObj: QueryFilterState,
+  list: Filter[],
+): FilterValue[] {
+  const filters: FilterValue[] = [];
+  const refs: Record<string, FilterValue> = {};
 
-  return null;
+  Object.keys(filterObj).forEach(id => {
+    const filter: FilterValue = {
+      id,
+      value: filterObj[id],
+      // operator: filterObj[id][1], // TODO: can probably get rid of this
+    };
+
+    refs[id] = filter;
+    filters.push(filter);
+  });
+
+  // Add operators from filter list
+  list.forEach(value => {
+    const currentFilterId = value.urlDisplay || value.id;
+    const filter = refs[currentFilterId];
+
+    if (filter) {
+      filter.operator = value.operator;
+      filter.id = value.id;
+    }
+  });
+
+  return filters;
 }
 
-export function getDefaultFilterOperator(filter: Filter): string {
-  if (filter?.operator) return filter.operator;
-  if (filter?.operators?.length) {
-    return filter.operators[0].value;
-  }
-  return '';
-}
-interface UseListViewConfig {
-  fetchData: (conf: FetchDataConfig) => any;
-  columns: any[];
-  data: any[];
+interface UseListViewConfig<D extends object = any> {
+  fetchData: (conf: FetchDataConfig) => void;
+  columns: ListViewColumn<D>[];
+  data: D[];
   count: number;
   initialPageSize: number;
   initialSort?: SortColumn[];
-  bulkSelectMode?: boolean;
   initialFilters?: Filter[];
-  bulkSelectColumnConfig?: {
-    id: string;
-    Header: (conf: any) => React.ReactNode;
-    Cell: (conf: any) => React.ReactNode;
-  };
+  renderCard?: boolean;
+  defaultViewMode?: ViewModeType;
+  forceViewMode?: ViewModeType;
 }
 
-export function useListViewState({
+export function useListViewState<D extends object = any>({
   fetchData,
   columns,
   data,
@@ -120,38 +195,68 @@ export function useListViewState({
   initialPageSize,
   initialFilters = [],
   initialSort = [],
-  bulkSelectMode = false,
-  bulkSelectColumnConfig,
-}: UseListViewConfig) {
+  renderCard = false,
+  defaultViewMode = 'card',
+  forceViewMode,
+}: UseListViewConfig<D>) {
   const [query, setQuery] = useQueryParams({
-    filters: JsonParam,
+    filters: RisonParam,
     pageIndex: NumberParam,
     sortColumn: StringParam,
     sortOrder: StringParam,
+    viewMode: StringParam,
   });
+
+  const previousQuery = useRef(query);
 
   const initialSortBy = useMemo(
     () =>
       query.sortColumn && query.sortOrder
         ? [{ id: query.sortColumn, desc: query.sortOrder === 'desc' }]
         : initialSort,
-    [query.sortColumn, query.sortOrder],
+    [initialSort, query.sortColumn, query.sortOrder],
   );
 
   const initialState = {
-    filters: convertFilters(query.filters || []),
+    filters: query.filters
+      ? convertFiltersRison(query.filters, initialFilters)
+      : [],
     pageIndex: query.pageIndex || 0,
     pageSize: initialPageSize,
     sortBy: initialSortBy,
   };
 
-  const columnsWithSelect = useMemo(() => {
-    // add exact filter type so filters with falsey values are not filtered out
-    const columnsWithFilter = columns.map(f => ({ ...f, filter: 'exact' }));
-    return bulkSelectMode
-      ? [bulkSelectColumnConfig, ...columnsWithFilter]
-      : columnsWithFilter;
-  }, [bulkSelectMode, columns]);
+  const [viewMode, setViewMode] = useState<ViewModeType>(
+    // forceViewMode overrides everything (used for mobile)
+    forceViewMode ||
+      (query.viewMode as ViewModeType) ||
+      (renderCard ? defaultViewMode : 'table'),
+  );
+
+  // Update viewMode when forceViewMode changes (e.g., screen resize). When
+  // forceViewMode is cleared (e.g., resizing from mobile back to desktop),
+  // fall back to the persisted query param or the default view instead of
+  // leaving the view stuck in the previously forced mode.
+  useEffect(() => {
+    if (forceViewMode) {
+      setViewMode(forceViewMode);
+    } else {
+      setViewMode(
+        (query.viewMode as ViewModeType) ||
+          (renderCard ? defaultViewMode : 'table'),
+      );
+    }
+    // Only react to forceViewMode transitions; query.viewMode, renderCard, and
+    // defaultViewMode are read for their current values, not to retrigger
+    // this effect on every change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceViewMode]);
+
+  const columnsWithFilter = useMemo(
+    // add exact filter type so filters with falsy values are not filtered out
+    () => columns.map(f => ({ ...f, filter: 'exact' })),
+    [columns],
+  );
 
   const {
     getTableProps,
@@ -164,13 +269,16 @@ export function useListViewState({
     pageCount,
     gotoPage,
     setAllFilters,
+    setSortBy,
     selectedFlatRows,
     toggleAllRowsSelected,
     state: { pageIndex, pageSize, sortBy, filters },
-  } = useTable(
+  } = useTable<D>(
     {
-      columns: columnsWithSelect,
-      count,
+      // ListViewColumn is intentionally looser than react-table's own
+      // Column<D> (see its definition for why); react-table only reads
+      // these fields at runtime and doesn't care about the stricter typing.
+      columns: columnsWithFilter as unknown as Column<D>[],
       data,
       disableFilters: true,
       disableSortRemove: true,
@@ -189,55 +297,105 @@ export function useListViewState({
   );
 
   const [internalFilters, setInternalFilters] = useState<InternalFilter[]>(
-    query.filters || [],
+    query.filters && initialFilters.length
+      ? mergeCreateFilterValues(initialFilters, query.filters)
+      : [],
   );
 
   useEffect(() => {
     if (initialFilters.length) {
       setInternalFilters(
-        mergeCreateFilterValues(initialFilters, query.filters || []),
+        mergeCreateFilterValues(
+          initialFilters,
+          query.filters ? query.filters : {},
+        ),
       );
     }
   }, [initialFilters]);
 
   useEffect(() => {
-    const queryParams: any = {
-      filters: internalFilters,
+    // Let URL navigation restore table state before writing or fetching it.
+    if (!isEqual(previousQuery.current, query)) {
+      return;
+    }
+    // From internalFilters, produce a simplified obj
+    const filterObj: Record<string, InnerFilterValue> = {};
+
+    internalFilters.forEach(filter => {
+      if (
+        filter.value !== undefined &&
+        (typeof filter.value !== 'string' || filter.value.length > 0)
+      ) {
+        const currentFilterId = filter.urlDisplay || filter.id;
+        filterObj[currentFilterId] = filter.value;
+      }
+    });
+
+    const queryParams: {
+      filters?: QueryFilterState;
+      pageIndex: number;
+      sortColumn?: string;
+      sortOrder?: 'asc' | 'desc';
+      viewMode?: ViewModeType;
+    } = {
+      filters: Object.keys(filterObj).length ? filterObj : undefined,
       pageIndex,
     };
-    if (sortBy[0]) {
+    if (sortBy?.[0]?.id !== undefined && sortBy[0].id !== null) {
       queryParams.sortColumn = sortBy[0].id;
       queryParams.sortOrder = sortBy[0].desc ? 'desc' : 'asc';
+    }
+
+    if (renderCard) {
+      queryParams.viewMode = viewMode;
     }
 
     const method =
       typeof query.pageIndex !== 'undefined' &&
       queryParams.pageIndex !== query.pageIndex
-        ? 'push'
-        : 'replace';
+        ? 'pushIn'
+        : 'replaceIn';
 
     setQuery(queryParams, method);
+
     fetchData({ pageIndex, pageSize, sortBy, filters });
   }, [fetchData, pageIndex, pageSize, sortBy, filters]);
 
   useEffect(() => {
+    previousQuery.current = query;
+    if (!isEqual(initialSortBy, sortBy)) {
+      setSortBy(initialSortBy);
+    }
     if (!isEqual(initialState.pageIndex, pageIndex)) {
       gotoPage(initialState.pageIndex);
     }
+    const restoredInternalFilters = mergeCreateFilterValues(
+      initialFilters,
+      query.filters || {},
+    );
+    const restoredFilters = convertFilters(restoredInternalFilters);
+    if (!isEqual(restoredFilters, filters)) {
+      setAllFilters(restoredFilters);
+    }
+    if (!isEqual(restoredInternalFilters, internalFilters)) {
+      setInternalFilters(restoredInternalFilters);
+    }
   }, [query]);
 
-  const applyFilterValue = (index: number, value: any) => {
+  const applyFilterValue = (index: number, value: InnerFilterValue) => {
     setInternalFilters(currentInternalFilters => {
-      // skip redunundant updates
+      // skip redundant updates
       if (currentInternalFilters[index].value === value) {
         return currentInternalFilters;
       }
+
       const update = { ...currentInternalFilters[index], value };
       const updatedFilters = updateInList(
         currentInternalFilters,
         index,
         update,
       );
+
       setAllFilters(convertFilters(updatedFilters));
       gotoPage(0); // clear pagination on filter
       return updatedFilters;
@@ -256,25 +414,11 @@ export function useListViewState({
     rows,
     selectedFlatRows,
     setAllFilters,
-    state: { pageIndex, pageSize, sortBy, filters, internalFilters },
+    setSortBy,
+    state: { pageIndex, pageSize, sortBy, filters, internalFilters, viewMode },
     toggleAllRowsSelected,
     applyFilterValue,
+    setViewMode,
+    query,
   };
 }
-
-export const filterSelectStyles: PartialStylesConfig = {
-  container: (provider, { getValue }) => ({
-    ...provider,
-    // dynamic width based on label string length
-    minWidth: `${Math.min(
-      12,
-      Math.max(5, 3 + getValue()[0].label.length / 2),
-    )}em`,
-  }),
-  control: provider => ({
-    ...provider,
-    borderWidth: 0,
-    boxShadow: 'none',
-    cursor: 'pointer',
-  }),
-};

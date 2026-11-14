@@ -16,55 +16,77 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
-import { t, tn } from '@superset-ui/core';
+import { ReactNode } from 'react';
+import { t, tn } from '@apache-superset/core/translation';
 
-import { ErrorMessageComponentProps } from './types';
-import IssueCode from './IssueCode';
-import ErrorAlert from './ErrorAlert';
+import type { ErrorMessageComponentProps } from './types';
+import { IssueCode } from './IssueCode';
+import { ErrorAlert } from './ErrorAlert';
+import { CustomDocLink, CustomDocLinkProps } from './CustomDocLink';
 
 interface DatabaseErrorExtra {
-  owners?: string[];
+  editors?: string[];
   issue_codes: {
     code: number;
     message: string;
   }[];
   engine_name: string | null;
+  custom_doc_links?: CustomDocLinkProps[];
+  show_issue_info?: boolean;
 }
 
-function DatabaseErrorMessage({
+export function DatabaseErrorMessage({
   error,
-  source = 'dashboard',
-}: ErrorMessageComponentProps<DatabaseErrorExtra>) {
+  source,
+  closable,
+}: ErrorMessageComponentProps<DatabaseErrorExtra | null>) {
   const { extra, level, message } = error;
 
-  const isVisualization = ['dashboard', 'explore'].includes(source);
+  const isVisualization = ['dashboard', 'explore'].includes(source || '');
+  const [firstLine, ...remainingLines] = message.split('\n');
+  const alertDescription =
+    remainingLines.length > 0 ? remainingLines.join('\n') : null;
+  let alertMessage: ReactNode = firstLine;
 
-  const body = (
+  if (Array.isArray(extra?.custom_doc_links)) {
+    alertMessage = (
+      <>
+        {firstLine}
+        {extra.custom_doc_links.map(link => (
+          <div key={link.url}>
+            <CustomDocLink {...link} />
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  const body = extra && extra.show_issue_info !== false && (
     <>
       <p>
         {t('This may be triggered by:')}
         <br />
-        {extra.issue_codes
-          .map<React.ReactNode>(issueCode => <IssueCode {...issueCode} />)
-          .reduce((prev, curr) => [prev, <br />, curr])}
+        {extra.issue_codes?.flatMap((issueCode, idx, arr) => [
+          <IssueCode {...issueCode} key={issueCode.code} />,
+          idx < arr.length - 1 ? <br key={`br-${issueCode.code}`} /> : null,
+        ])}
       </p>
-      {isVisualization && extra.owners && (
+      {isVisualization && extra.editors && (
         <>
           <br />
           <p>
             {tn(
-              'Please reach out to the Chart Owner for assistance.',
-              'Please reach out to the Chart Owners for assistance.',
-              extra.owners.length,
+              'Please reach out to the Chart Editor for assistance.',
+              'Please reach out to the Chart Editors for assistance.',
+              extra.editors.length,
             )}
           </p>
           <p>
             {tn(
-              'Chart Owner: %s',
-              'Chart Owners: %s',
-              extra.owners.length,
-              extra.owners.join(', '),
+              'Chart Editor: %s',
+              'Chart Editors: %s',
+              extra.editors.length,
+              extra.editors.join(', '),
             )}
           </p>
         </>
@@ -72,20 +94,15 @@ function DatabaseErrorMessage({
     </>
   );
 
-  const copyText = `${message}
-${t('This may be triggered by:')}
-${extra.issue_codes.map(issueCode => issueCode.message).join('\n')}`;
-
   return (
     <ErrorAlert
-      title={t('%s Error', extra.engine_name || t('DB Engine'))}
-      subtitle={message}
-      level={level}
-      source={source}
-      copyText={copyText}
-      body={body}
+      errorType={t('%s Error', extra?.engine_name || t('DB engine'))}
+      message={alertMessage}
+      messagePre
+      description={alertDescription}
+      type={level}
+      descriptionDetails={body}
+      closable={closable}
     />
   );
 }
-
-export default DatabaseErrorMessage;

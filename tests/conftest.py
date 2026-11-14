@@ -1,101 +1,142 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
 #
-#   http://www.apache.org/licenses/LICENSE-2.0
+#  http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-# isort:skip_file
-from typing import Any
+#  Unless required by applicable law or agreed to in writing,
+#  software distributed under the License is distributed on an
+#  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#  KIND, either express or implied.  See the License for the
+#  specific language governing permissions and limitations
+#  under the License.
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing,
+#  software distributed under the License is distributed on an
+#  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#  KIND, either express or implied.  See the License for the
+#  specific language governing permissions and limitations
+#  under the License.
+from __future__ import annotations
 
-import pytest
-from sqlalchemy.engine import Engine
+import functools
+from typing import Any, Callable, TYPE_CHECKING
+from unittest.mock import MagicMock, Mock, PropertyMock
 
-from tests.test_app import app
+from flask import current_app
+from pytest import fixture  # noqa: PT013
 
-from superset import db
-from superset.utils.core import get_example_database
+from tests.example_data.data_loading.pandas.pandas_data_loader import PandasDataLoader
+from tests.example_data.data_loading.pandas.pands_data_loading_conf import (
+    PandasLoaderConfigurations,
+)
+from tests.example_data.data_loading.pandas.table_df_convertor import (
+    TableToDfConvertorImpl,
+)
+from tests.integration_tests.test_app import app
+
+SUPPORT_DATETIME_TYPE = "support_datetime_type"
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
+
+    from superset.connectors.sqla.models import Database
+    from tests.example_data.data_loading.base_data_loader import DataLoader
+    from tests.example_data.data_loading.pandas.pandas_data_loader import (
+        TableToDfConvertor,
+    )
+
+pytest_plugins = "tests.fixtures"
+
+PRESTO = "presto"
+BACKEND_PROPERTY_VALUE = "sqlite"
 
 
-CTAS_SCHEMA_NAME = "sqllab_test_db"
-ADMIN_SCHEMA_NAME = "admin_database"
+@fixture(scope="session")
+def example_db_provider() -> Callable[[], Database]:
+    def mock_provider() -> Mock:
+        mock = MagicMock()
+        type(mock).backend = PropertyMock(return_value=BACKEND_PROPERTY_VALUE)
+        return mock
+
+    return mock_provider
 
 
-@pytest.fixture(autouse=True, scope="session")
-def setup_sample_data() -> Any:
+@fixture(scope="session")
+def example_db_engine(example_db_provider: Callable[[], Database]) -> Engine:
     with app.app_context():
-        setup_presto_if_needed()
-
-        from superset.cli import load_test_users_run
-
-        load_test_users_run()
-
-        from superset import examples
-
-        examples.load_css_templates()
-        examples.load_energy(sample=True)
-        examples.load_world_bank_health_n_pop(sample=True)
-        examples.load_birth_names(sample=True)
-        examples.load_unicode_test_data(sample=True)
-
-    yield
-
-    with app.app_context():
-        engine = get_example_database().get_sqla_engine()
-        engine.execute("DROP TABLE energy_usage")
-        engine.execute("DROP TABLE wb_health_population")
-        engine.execute("DROP TABLE birth_names")
-        engine.execute("DROP TABLE unicode_test")
-
-        # drop sqlachemy tables
-
-        db.session.commit()
-        from sqlalchemy.ext import declarative
-
-        sqla_base = declarative.declarative_base()
-        # uses sorted_tables to drop in proper order without violating foreign constrains
-        for table in sqla_base.metadata.sorted_tables:
-            table.__table__.drop()
-        db.session.commit()
+        with example_db_provider().get_sqla_engine() as engine:
+            return engine
 
 
-def drop_from_schema(engine: Engine, schema_name: str):
-    schemas = engine.execute(f"SHOW SCHEMAS").fetchall()
-    if schema_name not in [s[0] for s in schemas]:
-        # schema doesn't exist
-        return
-    tables_or_views = engine.execute(f"SHOW TABLES in {schema_name}").fetchall()
-    for tv in tables_or_views:
-        engine.execute(f"DROP TABLE IF EXISTS {schema_name}.{tv[0]}")
-        engine.execute(f"DROP VIEW IF EXISTS {schema_name}.{tv[0]}")
+@fixture(scope="session")
+def pandas_loader_configuration(
+    support_datetime_type,
+) -> PandasLoaderConfigurations:
+    return PandasLoaderConfigurations.make_from_dict(
+        {SUPPORT_DATETIME_TYPE: support_datetime_type}
+    )
 
 
-def setup_presto_if_needed():
-    backend = app.config["SQLALCHEMY_EXAMPLES_URI"].split("://")[0]
-    if backend == "presto":
-        # decrease poll interval for tests
-        presto_poll_interval = app.config["PRESTO_POLL_INTERVAL"]
-        extra = f'{{"engine_params": {{"connect_args": {{"poll_interval": {presto_poll_interval}}}}}}}'
-        database = get_example_database()
-        database.extra = extra
-        db.session.commit()
+@fixture(scope="session")
+def support_datetime_type(example_db_provider: Callable[[], Database]) -> bool:
+    return example_db_provider().backend != PRESTO
 
-    if backend in {"presto", "hive"}:
-        database = get_example_database()
-        engine = database.get_sqla_engine()
-        drop_from_schema(engine, CTAS_SCHEMA_NAME)
-        engine.execute(f"DROP SCHEMA IF EXISTS {CTAS_SCHEMA_NAME}")
-        engine.execute(f"CREATE SCHEMA {CTAS_SCHEMA_NAME}")
 
-        drop_from_schema(engine, ADMIN_SCHEMA_NAME)
-        engine.execute(f"DROP SCHEMA IF EXISTS {ADMIN_SCHEMA_NAME}")
-        engine.execute(f"CREATE SCHEMA {ADMIN_SCHEMA_NAME}")
+@fixture(scope="session")
+def table_to_df_convertor(
+    pandas_loader_configuration: PandasLoaderConfigurations,
+) -> TableToDfConvertor:
+    return TableToDfConvertorImpl(
+        not pandas_loader_configuration.support_datetime_type,
+        pandas_loader_configuration.strftime,
+    )
+
+
+@fixture(scope="session")
+def data_loader(
+    example_db_engine: Engine,
+    pandas_loader_configuration: PandasLoaderConfigurations,
+    table_to_df_convertor: TableToDfConvertor,
+) -> DataLoader:
+    if example_db_engine.dialect.name == PRESTO:
+        example_db_engine.dialect.get_view_names = Mock(return_value=[])
+    return PandasDataLoader(
+        example_db_engine, pandas_loader_configuration, table_to_df_convertor
+    )
+
+
+def with_config(override_config: dict[str, Any]):
+    """
+    Use this decorator to mock specific config keys.
+
+    Usage:
+
+        class TestYourFeature(SupersetTestCase):
+
+            @with_config({"SOME_CONFIG": True})
+            def test_your_config(self):
+                self.assertEqual(curren_app.config["SOME_CONFIG"), True)
+
+    """
+
+    def decorate(test_fn):
+        config_backup = {}
+
+        def wrapper(*args, **kwargs):
+            for key, value in override_config.items():
+                config_backup[key] = current_app.config[key]
+                current_app.config[key] = value
+            test_fn(*args, **kwargs)
+            for key, value in config_backup.items():
+                current_app.config[key] = value
+
+        return functools.update_wrapper(wrapper, test_fn)
+
+    return decorate

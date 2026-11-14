@@ -16,132 +16,268 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { t, styled } from '@superset-ui/core';
-import React, { useState } from 'react';
-import { Alert } from 'react-bootstrap';
-import { Empty } from 'src/common/components';
+import { t } from '@apache-superset/core/translation';
+import { Alert } from '@apache-superset/core/components';
+import { css, styled } from '@apache-superset/core/theme';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  ReactNode,
+} from 'react';
 import cx from 'classnames';
-import Button from 'src/components/Button';
-import Icon from 'src/components/Icon';
-import IndeterminateCheckbox from 'src/components/IndeterminateCheckbox';
-import TableCollection from './TableCollection';
+import { Row } from 'react-table';
+import TableCollection, {
+  type ListViewColumn,
+} from '@superset-ui/core/components/TableCollection';
+import BulkTagModal from 'src/features/tags/BulkTagModal';
+import {
+  Button,
+  Tooltip,
+  Drawer,
+  Icons,
+  EmptyState,
+  Loading,
+  Pagination,
+  type EmptyStateProps,
+} from '@superset-ui/core/components';
 import CardCollection from './CardCollection';
-import Pagination from './Pagination';
 import FilterControls from './Filters';
 import { CardSortSelect } from './CardSortSelect';
 import {
-  FetchDataConfig,
-  Filters,
+  ListViewFetchDataConfig as FetchDataConfig,
+  ListViewFilters as Filters,
   SortColumn,
   CardSortSelectOption,
+  ViewModeType,
 } from './types';
 import { ListViewError, useListViewState } from './utils';
 
 const ListViewStyles = styled.div`
-  text-align: center;
+  ${({ theme }) => `
+    text-align: center;
+    background-color: ${theme.colorBgLayout};
+    padding-top: ${theme.paddingXS}px;
 
-  .superset-list-view {
-    text-align: left;
-    background-color: white;
-    border-radius: 4px 0;
-    margin: 0 16px;
-    padding-bottom: 48px;
+    .superset-list-view {
+      text-align: left;
+      border-radius: 4px 0;
+      margin: 0 ${theme.sizeUnit * 4}px;
 
-    .body {
-      overflow: scroll;
-      max-height: 64vh;
+      .header {
+        display: flex;
+        align-items: center;
+        padding-bottom: ${theme.sizeUnit * 4}px;
+
+        & .controls {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          column-gap: ${theme.sizeUnit * 2}px;
+          row-gap: ${theme.sizeUnit * 2}px;
+
+          /* Search input — fixed width/height matching pill height, label hidden */
+          [data-test='search-filter-container'] {
+            width: ${theme.sizeUnit * 44}px;
+            flex-shrink: 0;
+            height: ${theme.controlHeight}px;
+            align-self: center;
+            /* Hide the FormLabel Flex wrapper entirely so it doesn't affect
+               the column's justify-content centering calculation. */
+            > .ant-flex {
+              display: none;
+            }
+            label {
+              display: none;
+            }
+            .ant-input-affix-wrapper {
+              width: 100%;
+              height: 100%;
+            }
+          }
+
+          /* Select filter pill wrappers — make them proper flex items so the
+             inline-flex button inside doesn't introduce line-box quirks. */
+          [data-test='select-filter-container'] {
+            display: flex;
+            align-items: center;
+            align-self: center;
+          }
+        }
+      }
+
+      .body.empty table {
+        margin-bottom: 0;
+      }
+
+      .body {
+        overflow-x: auto;
+        overflow-y: hidden;
+      }
+
+      .ant-empty {
+        .ant-empty-image {
+          height: auto;
+        }
+      }
     }
-  }
 
-  .pagination-container {
+    .pagination-container {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      margin-bottom: ${theme.sizeUnit * 4}px;
+    }
+
+    .row-count-container {
+      margin-top: ${theme.sizeUnit * 2}px;
+      color: ${theme.colorText};
+      text-align: center;
+    }
+  `}
+`;
+
+const FullPageLoadingWrapper = styled.div`
+  ${({ theme }) => `
     display: flex;
-    flex-direction: column;
+    align-items: center;
     justify-content: center;
-  }
-
-  .row-count-container {
-    margin-top: ${({ theme }) => theme.gridUnit * 2}px;
-    color: ${({ theme }) => theme.colors.grayscale.base};
-  }
+    min-height: 50vh;
+    padding: ${theme.sizeUnit * 16}px;
+  `}
 `;
 
 const BulkSelectWrapper = styled(Alert)`
-  border-radius: 0;
-  margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-right: 36px;
-  color: #3d3d3d;
-  background-color: ${({ theme }) => theme.colors.primary.light4};
+  ${({ theme }) => `
+    border-radius: 0;
+    margin-bottom: 0;
+    color: ${theme.colorText};
+    background-color: ${theme.colorPrimaryBg};
 
-  .selectedCopy {
-    display: inline-block;
-    padding: 16px 0;
-  }
+    .selectedCopy {
+      display: inline-block;
+      padding: ${theme.sizeUnit * 2}px 0;
+    }
 
-  .deselect-all {
-    color: #1985a0;
-    margin-left: 16px;
-  }
+    .deselect-all, .tag-btn {
+      color: ${theme.colorPrimary};
+      margin-left: ${theme.sizeUnit * 4}px;
+    }
 
-  .divider {
-    margin: -8px 0 -8px 16px;
-    width: 1px;
-    height: 32px;
-    box-shadow: inset -1px 0px 0px #dadada;
-    display: inline-flex;
-    vertical-align: middle;
-    position: relative;
-  }
+    .divider {
+      margin: ${`${-theme.sizeUnit * 2}px 0 ${-theme.sizeUnit * 2}px ${theme.sizeUnit * 4}px`};
+      width: 1px;
+      height: ${theme.sizeUnit * 8}px;
+      display: inline-flex;
+      vertical-align: middle;
+      position: relative;
+    }
 
-  .close {
-    margin: 16px 0;
-  }
+    .ant-alert-close-icon {
+      margin-top: ${theme.sizeUnit * 1.5}px;
+    }
+  `}
 `;
 
-const bulkSelectColumnConfig = {
-  Cell: ({ row }: any) => (
-    <IndeterminateCheckbox {...row.getToggleRowSelectedProps()} id={row.id} />
-  ),
-  Header: ({ getToggleAllRowsSelectedProps }: any) => (
-    <IndeterminateCheckbox
-      {...getToggleAllRowsSelectedProps()}
-      id="header-toggle-all"
-    />
-  ),
-  id: 'selection',
-  size: 'sm',
-};
-
 const ViewModeContainer = styled.div`
-  padding: ${({ theme }) => theme.gridUnit * 6}px 0px
-    ${({ theme }) => theme.gridUnit * 2}px
-    ${({ theme }) => theme.gridUnit * 4}px;
-  display: inline-block;
-  position: relative;
-  top: 8px;
-
-  .toggle-button {
+  ${({ theme }) => `
+    padding-right: ${theme.sizeUnit * 4}px;
+    white-space: nowrap;
     display: inline-block;
-    border-radius: ${({ theme }) => theme.gridUnit / 2}px;
-    padding: ${({ theme }) => theme.gridUnit}px;
-    padding-bottom: 0;
 
-    &:first-of-type {
-      margin-right: ${({ theme }) => theme.gridUnit * 2}px;
-    }
-  }
+    .toggle-button {
+      appearance: none;
+      border: none;
+      background: none;
+      font: inherit;
+      display: inline-block;
+      border-radius: ${theme.borderRadius}px;
+      padding: ${theme.sizeUnit}px;
+      padding-bottom: ${theme.sizeUnit * 0.5}px;
+      cursor: pointer;
 
-  .active {
-    background-color: ${({ theme }) => theme.colors.grayscale.base};
-    svg {
-      color: ${({ theme }) => theme.colors.grayscale.light5};
+      &:first-of-type {
+        margin-right: ${theme.sizeUnit * 2}px;
+      }
     }
-  }
+
+    .active {
+      background-color: ${theme.colorText};
+
+      svg {
+        color: ${theme.colorBgLayout};
+      }
+    }
+  `}
+`;
+
+const inlineTextButtonCss = css`
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+`;
+
+const ClearAllButton = styled.button`
+  ${({ theme }) => `
+    background: none;
+    border: none;
+    padding: 0 ${theme.sizeUnit}px;
+    color: ${theme.colorPrimary};
+    font-size: ${theme.fontSizeSM}px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: ${theme.controlHeight}px;
+
+    &:hover:not(:disabled) {
+      color: ${theme.colorPrimaryHover};
+      text-decoration: underline;
+    }
+
+    &:disabled {
+      color: ${theme.colorTextDisabled};
+      cursor: not-allowed;
+    }
+  `}
 `;
 
 const EmptyWrapper = styled.div`
-  margin: ${({ theme }) => theme.gridUnit * 40}px 0;
+  ${({ theme }) => `
+    padding: ${theme.sizeUnit * 40}px 0;
+    width: 100%;
+
+    &.table {
+      background: ${theme.colorBgContainer};
+    }
+  `}
+`;
+
+const MobileFilterDrawerContent = styled.div`
+  ${({ theme }) => `
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.sizeUnit * 4}px;
+    padding: ${theme.sizeUnit * 2}px;
+
+    /* Make filter inputs stack vertically and full-width */
+    > * {
+      width: 100%;
+    }
+
+    /* Override inline filter styling for vertical layout */
+    .filter-container {
+      width: 100%;
+    }
+
+    input[type="text"],
+    .ant-select {
+      width: 100% !important;
+    }
+  `}
 `;
 
 const ViewModeToggle = ({
@@ -150,66 +286,95 @@ const ViewModeToggle = ({
 }: {
   mode: 'table' | 'card';
   setMode: (mode: 'table' | 'card') => void;
-}) => {
-  return (
-    <ViewModeContainer>
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={e => {
+}) => (
+  <ViewModeContainer>
+    <Tooltip title={t('Grid view')}>
+      <button
+        type="button"
+        aria-pressed={mode === 'card'}
+        onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
           e.currentTarget.blur();
           setMode('card');
         }}
         className={cx('toggle-button', { active: mode === 'card' })}
       >
-        <Icon name="card-view" />
-      </div>
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={e => {
+        <Icons.AppstoreOutlined iconSize="xl" />
+      </button>
+    </Tooltip>
+    <Tooltip title={t('List view')}>
+      <button
+        type="button"
+        aria-pressed={mode === 'table'}
+        onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
           e.currentTarget.blur();
           setMode('table');
         }}
         className={cx('toggle-button', { active: mode === 'table' })}
       >
-        <Icon name="list-view" />
-      </div>
-    </ViewModeContainer>
-  );
-};
-
-type ViewModeType = 'card' | 'table';
+        <Icons.UnorderedListOutlined iconSize="xl" />
+      </button>
+    </Tooltip>
+  </ViewModeContainer>
+);
 export interface ListViewProps<T extends object = any> {
-  columns: any[];
+  columns: ListViewColumn<T>[];
   data: T[];
   count: number;
   pageSize: number;
-  fetchData: (conf: FetchDataConfig) => any;
+  fetchData: (conf: FetchDataConfig) => void;
+  refreshData: () => void;
+  addSuccessToast: (msg: string) => void;
+  addDangerToast: (msg: string) => void;
   loading: boolean;
   className?: string;
   initialSort?: SortColumn[];
   filters?: Filters;
   bulkActions?: Array<{
     key: string;
-    name: React.ReactNode;
-    onSelect: (rows: any[]) => any;
+    name: ReactNode;
+    onSelect: (rows: T[]) => void;
     type?: 'primary' | 'secondary' | 'danger';
+    hidden?: (rows: T[]) => boolean;
   }>;
   bulkSelectEnabled?: boolean;
   disableBulkSelect?: () => void;
-  renderBulkSelectCopy?: (selects: any[]) => React.ReactNode;
-  renderCard?: (row: T & { loading: boolean }) => React.ReactNode;
+  renderBulkSelectCopy?: (selects: Row<T>[]) => ReactNode;
+  renderCard?: (row: T & { loading: boolean }) => ReactNode;
   cardSortSelectOptions?: Array<CardSortSelectOption>;
   defaultViewMode?: ViewModeType;
+  forceViewMode?: ViewModeType;
+  highlightRowId?: number;
+  /** Highlight arbitrary rows by predicate on the mapped record (e.g. by uuid). */
+  isRowHighlighted?: (record: Record<string, unknown>) => boolean;
+  showThumbnails?: boolean;
+  emptyState?: EmptyStateProps;
+  columnsForWrapText?: string[];
+  enableBulkTag?: boolean;
+  bulkTagResourceName?: string;
+  /** Optional ref exposed to callers for programmatic filter control. */
+  filtersRef?: React.RefObject<{
+    clearFilters: () => void;
+    clearFilterById: (id: string) => void;
+  }>;
+  /** Optional expandable row configuration, passed through to antd Table. */
+  expandable?: Record<string, unknown>;
+  /** Content rendered between the filter bar and the table/card body. */
+  headerContent?: ReactNode;
+  /** Whether mobile filters drawer is open (controlled externally) */
+  mobileFiltersOpen?: boolean;
+  /** Callback to set mobile filters drawer open state */
+  setMobileFiltersOpen?: (open: boolean) => void;
+  /** Title for the mobile filters drawer */
+  mobileFiltersDrawerTitle?: string;
 }
 
-function ListView<T extends object = any>({
+export function ListView<T extends object = any>({
   columns,
   data,
   count,
   pageSize: initialPageSize,
   fetchData,
+  refreshData,
   loading,
   initialSort = [],
   className = '',
@@ -219,8 +384,24 @@ function ListView<T extends object = any>({
   disableBulkSelect = () => {},
   renderBulkSelectCopy = selected => t('%s Selected', selected.length),
   renderCard,
+  showThumbnails,
   cardSortSelectOptions,
   defaultViewMode = 'card',
+  forceViewMode,
+  highlightRowId,
+  isRowHighlighted,
+  emptyState,
+  columnsForWrapText,
+  enableBulkTag = false,
+  bulkTagResourceName,
+  filtersRef,
+  expandable,
+  headerContent,
+  addSuccessToast,
+  addDangerToast,
+  mobileFiltersOpen = false,
+  setMobileFiltersOpen,
+  mobileFiltersDrawerTitle,
 }: ListViewProps<T>) {
   const {
     getTableProps,
@@ -231,12 +412,13 @@ function ListView<T extends object = any>({
     pageCount = 1,
     gotoPage,
     applyFilterValue,
+    setSortBy,
     selectedFlatRows,
     toggleAllRowsSelected,
-    state: { pageIndex, pageSize, internalFilters },
+    setViewMode,
+    state: { pageIndex, pageSize, internalFilters, sortBy, viewMode },
+    query,
   } = useListViewState({
-    bulkSelectColumnConfig,
-    bulkSelectMode: bulkSelectEnabled && Boolean(bulkActions.length),
     columns,
     count,
     data,
@@ -244,11 +426,15 @@ function ListView<T extends object = any>({
     initialPageSize,
     initialSort,
     initialFilters: filters,
+    renderCard: Boolean(renderCard),
+    defaultViewMode,
+    forceViewMode,
   });
+  const allowBulkTagActions = bulkTagResourceName && enableBulkTag;
   const filterable = Boolean(filters.length);
   if (filterable) {
-    const columnAccessors = columns.reduce(
-      (acc, col) => ({ ...acc, [col.accessor || col.id]: true }),
+    const columnAccessors = columns.reduce<Record<string, boolean>>(
+      (acc, col) => ({ ...acc, [String(col.id || col.accessor)]: true }),
       {},
     );
     filters.forEach(f => {
@@ -260,125 +446,313 @@ function ListView<T extends object = any>({
     });
   }
 
+  const filterControlsRef = useRef<{
+    clearFilters: () => void;
+    clearFilterById: (id: string) => void;
+  }>(null);
+
+  const hasActiveFilters = internalFilters.some(f => {
+    if (f.value === null || f.value === undefined || f.value === '')
+      return false;
+    if (Array.isArray(f.value))
+      return f.value.some(v => v !== null && v !== undefined && v !== '');
+    return true;
+  });
+
+  // Wire the optional external filtersRef to our internal filterControlsRef.
+  // useLayoutEffect fires synchronously after DOM mutations, guaranteeing the
+  // ref is populated before the first paint and after every update.
+  useLayoutEffect(() => {
+    if (filtersRef) {
+      (
+        filtersRef as React.MutableRefObject<typeof filterControlsRef.current>
+      ).current = filterControlsRef.current;
+    }
+  });
+
+  const handleClearFilterControls = useCallback(() => {
+    if (query.filters) {
+      filterControlsRef.current?.clearFilters();
+    }
+  }, [query.filters]);
+
   const cardViewEnabled = Boolean(renderCard);
-  const [viewingMode, setViewingMode] = useState<ViewModeType>(
-    cardViewEnabled ? defaultViewMode : 'table',
-  );
+  const [showBulkTagModal, setShowBulkTagModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    // discard selections if bulk select is disabled
+    if (!bulkSelectEnabled) toggleAllRowsSelected(false);
+  }, [bulkSelectEnabled, toggleAllRowsSelected]);
+
+  useEffect(() => {
+    if (!loading && pageIndex > pageCount - 1 && pageCount > 0) {
+      gotoPage(0);
+    }
+  }, [gotoPage, loading, pageCount, pageIndex]);
 
   return (
     <ListViewStyles>
-      <div className={`superset-list-view ${className}`}>
+      {allowBulkTagActions && (
+        <BulkTagModal
+          show={showBulkTagModal}
+          selected={selectedFlatRows}
+          refreshData={refreshData}
+          resourceName={bulkTagResourceName}
+          addSuccessToast={addSuccessToast}
+          addDangerToast={addDangerToast}
+          onHide={() => setShowBulkTagModal(false)}
+        />
+      )}
+      <div data-test={className} className={`superset-list-view ${className} `}>
         <div className="header">
-          {cardViewEnabled && (
-            <ViewModeToggle mode={viewingMode} setMode={setViewingMode} />
+          {cardViewEnabled && !forceViewMode && (
+            <ViewModeToggle mode={viewMode} setMode={setViewMode} />
           )}
-          {filterable && (
-            <FilterControls
-              filters={filters}
-              internalFilters={internalFilters}
-              updateFilterValue={applyFilterValue}
-            />
-          )}
-          {viewingMode === 'card' && cardSortSelectOptions && (
-            <CardSortSelect
-              initialSort={initialSort}
-              onChange={fetchData}
-              options={cardSortSelectOptions}
-              pageIndex={pageIndex}
-              pageSize={pageSize}
-            />
-          )}
+          <div className="controls" data-test="filters-select">
+            {/* When a mobile drawer callback is provided, filters and sort
+                render inside the drawer instead of inline. Only one
+                FilterControls instance is ever mounted, so filtersRef and
+                filterControlsRef always point at the visible instance. */}
+            {filterable && !setMobileFiltersOpen && (
+              <FilterControls
+                ref={filterControlsRef}
+                filters={filters}
+                internalFilters={internalFilters}
+                updateFilterValue={applyFilterValue}
+              />
+            )}
+            {viewMode === 'card' &&
+              cardSortSelectOptions &&
+              !setMobileFiltersOpen && (
+                <CardSortSelect
+                  key={JSON.stringify(sortBy)}
+                  initialSort={sortBy}
+                  onChange={(value: SortColumn[]) => setSortBy(value)}
+                  options={cardSortSelectOptions}
+                />
+              )}
+            {filterable && !setMobileFiltersOpen && (
+              <Tooltip
+                title={!hasActiveFilters ? t('No filters applied') : undefined}
+              >
+                <span>
+                  <ClearAllButton
+                    type="button"
+                    disabled={!hasActiveFilters}
+                    onClick={() => filterControlsRef.current?.clearFilters()}
+                  >
+                    {t('Clear all')}
+                  </ClearAllButton>
+                </span>
+              </Tooltip>
+            )}
+          </div>
         </div>
-        <div className="body">
+        {headerContent}
+        <div className={`body ${rows.length === 0 ? 'empty' : ''} `}>
           {bulkSelectEnabled && (
             <BulkSelectWrapper
               data-test="bulk-select-controls"
-              bsStyle="info"
-              onDismiss={disableBulkSelect}
-            >
-              <div className="selectedCopy" data-test="bulk-select-copy">
-                {renderBulkSelectCopy(selectedFlatRows)}
-              </div>
-              {Boolean(selectedFlatRows.length) && (
+              type="info"
+              closable
+              showIcon={false}
+              onClose={disableBulkSelect}
+              message={
                 <>
-                  <span
-                    data-test="bulk-select-deselect-all"
-                    role="button"
-                    tabIndex={0}
-                    className="deselect-all"
-                    onClick={() => toggleAllRowsSelected(false)}
-                  >
-                    {t('Deselect All')}
-                  </span>
-                  <div className="divider" />
-                  {bulkActions.map(action => (
-                    <Button
-                      data-test="bulk-select-action"
-                      key={action.key}
-                      className={cx({
-                        danger: action.type === 'danger',
-                        primary: action.type === 'primary',
-                        secondary: action.type === 'secondary',
-                      })}
-                      cta
-                      onClick={() =>
-                        action.onSelect(selectedFlatRows.map(r => r.original))
-                      }
-                    >
-                      {action.name}
-                    </Button>
-                  ))}
+                  <div className="selectedCopy" data-test="bulk-select-copy">
+                    {renderBulkSelectCopy(selectedFlatRows)}
+                  </div>
+                  {Boolean(selectedFlatRows.length) && (
+                    <>
+                      <button
+                        type="button"
+                        data-test="bulk-select-deselect-all"
+                        css={inlineTextButtonCss}
+                        className="deselect-all"
+                        onClick={() => toggleAllRowsSelected(false)}
+                      >
+                        {t('Deselect all')}
+                      </button>
+                      <div className="divider" />
+                      {bulkActions
+                        .filter(
+                          action =>
+                            !action.hidden?.(
+                              selectedFlatRows.map(r => r.original),
+                            ),
+                        )
+                        .map(action => (
+                          <Button
+                            data-test="bulk-select-action"
+                            data-test-action-key={action.key}
+                            key={action.key}
+                            buttonStyle={action.type}
+                            cta
+                            onClick={() =>
+                              action.onSelect(
+                                selectedFlatRows.map(r => r.original),
+                              )
+                            }
+                          >
+                            {action.name}
+                          </Button>
+                        ))}
+                      {enableBulkTag && (
+                        <button
+                          type="button"
+                          data-test="bulk-select-tag-btn"
+                          css={inlineTextButtonCss}
+                          className="tag-btn"
+                          onClick={() => setShowBulkTagModal(true)}
+                        >
+                          {t('Add Tag')}
+                        </button>
+                      )}
+                    </>
+                  )}
                 </>
+              }
+            />
+          )}
+          {viewMode === 'card' && (
+            <>
+              <CardCollection<T>
+                bulkSelectEnabled={bulkSelectEnabled}
+                prepareRow={prepareRow}
+                renderCard={renderCard}
+                rows={rows}
+                loading={loading}
+                showThumbnails={showThumbnails}
+              />
+              {count > 0 && (
+                <div className="pagination-container">
+                  <Pagination
+                    current={pageIndex + 1}
+                    pageSize={pageSize}
+                    total={count}
+                    onChange={(page: number) => {
+                      gotoPage(page - 1);
+                    }}
+                    showSizeChanger={false}
+                    showQuickJumper={false}
+                    hideOnSinglePage
+                    align="center"
+                  />
+                  <div className="row-count-container">
+                    {`${pageIndex * pageSize + 1}-${Math.min(
+                      (pageIndex + 1) * pageSize,
+                      count,
+                    )} of ${count}`}
+                  </div>
+                </div>
               )}
-            </BulkSelectWrapper>
+            </>
           )}
-          {viewingMode === 'card' && (
-            <CardCollection
-              bulkSelectEnabled={bulkSelectEnabled}
-              prepareRow={prepareRow}
-              renderCard={renderCard}
-              rows={rows}
-              loading={loading}
-            />
-          )}
-          {viewingMode === 'table' && (
-            <TableCollection
-              getTableProps={getTableProps}
-              getTableBodyProps={getTableBodyProps}
-              prepareRow={prepareRow}
-              headerGroups={headerGroups}
-              rows={rows}
-              columns={columns}
-              loading={loading}
-            />
+          {viewMode === 'table' && (
+            <>
+              {loading && rows.length === 0 ? (
+                <FullPageLoadingWrapper>
+                  <Loading />
+                </FullPageLoadingWrapper>
+              ) : (
+                <TableCollection<T>
+                  getTableProps={getTableProps}
+                  getTableBodyProps={getTableBodyProps}
+                  prepareRow={prepareRow}
+                  headerGroups={headerGroups}
+                  setSortBy={setSortBy}
+                  sortBy={sortBy}
+                  rows={rows}
+                  columns={columns}
+                  loading={loading && rows.length > 0}
+                  highlightRowId={highlightRowId}
+                  isRowHighlighted={isRowHighlighted}
+                  columnsForWrapText={columnsForWrapText}
+                  expandable={expandable}
+                  bulkSelectEnabled={bulkSelectEnabled}
+                  selectedFlatRows={selectedFlatRows}
+                  toggleRowSelected={(rowId, value) => {
+                    const row = rows.find(r => r.id === rowId);
+                    if (row) {
+                      prepareRow(row);
+                      row.toggleRowSelected(value);
+                    }
+                  }}
+                  toggleAllRowsSelected={toggleAllRowsSelected}
+                  pageIndex={pageIndex}
+                  pageSize={pageSize}
+                  totalCount={count}
+                  onPageChange={newPageIndex => {
+                    gotoPage(newPageIndex);
+                  }}
+                />
+              )}
+            </>
           )}
           {!loading && rows.length === 0 && (
-            <EmptyWrapper>
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <EmptyWrapper className={viewMode} data-test="empty-state">
+              {query.filters ? (
+                <EmptyState
+                  title={t('No results match your filter criteria')}
+                  description={t('Try different criteria to display results.')}
+                  size="large"
+                  image="filter-results.svg"
+                  buttonAction={() => handleClearFilterControls()}
+                  buttonText={t('Clear all filters')}
+                />
+              ) : (
+                <EmptyState
+                  {...emptyState}
+                  title={emptyState?.title || t('No Data')}
+                  size="large"
+                  image={emptyState?.image || 'filter-results.svg'}
+                />
+              )}
             </EmptyWrapper>
           )}
         </div>
       </div>
 
-      <div className="pagination-container">
-        <Pagination
-          totalPages={pageCount || 0}
-          currentPage={pageCount ? pageIndex + 1 : 0}
-          onChange={(p: number) => gotoPage(p - 1)}
-          hideFirstAndLastPageLinks
-        />
-        <div className="row-count-container">
-          {!loading &&
-            t(
-              '%s-%s of %s',
-              pageSize * pageIndex + (rows.length && 1),
-              pageSize * pageIndex + rows.length,
-              count,
+      {/* Mobile filter drawer */}
+      {filterable && setMobileFiltersOpen && (
+        <Drawer
+          title={mobileFiltersDrawerTitle || t('Search')}
+          placement="left"
+          onClose={() => setMobileFiltersOpen(false)}
+          open={mobileFiltersOpen}
+          width={300}
+        >
+          <MobileFilterDrawerContent>
+            <FilterControls
+              ref={filterControlsRef}
+              filters={filters}
+              internalFilters={internalFilters}
+              updateFilterValue={applyFilterValue}
+            />
+            {viewMode === 'card' && cardSortSelectOptions && (
+              <CardSortSelect
+                key={JSON.stringify(sortBy)}
+                initialSort={sortBy}
+                onChange={(value: SortColumn[]) => setSortBy(value)}
+                options={cardSortSelectOptions}
+              />
             )}
-        </div>
-      </div>
+            <Tooltip
+              title={!hasActiveFilters ? t('No filters applied') : undefined}
+            >
+              <span>
+                <ClearAllButton
+                  type="button"
+                  disabled={!hasActiveFilters}
+                  onClick={() => filterControlsRef.current?.clearFilters()}
+                >
+                  {t('Clear all')}
+                </ClearAllButton>
+              </span>
+            </Tooltip>
+          </MobileFilterDrawerContent>
+        </Drawer>
+      )}
     </ListViewStyles>
   );
 }
-
-export default ListView;

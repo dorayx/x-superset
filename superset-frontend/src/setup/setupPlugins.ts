@@ -17,37 +17,21 @@
  * under the License.
  */
 import { getChartControlPanelRegistry } from '@superset-ui/core';
+import { convertAgGridStateToOwnState } from '@superset-ui/plugin-chart-ag-grid-table';
 import MainPreset from '../visualizations/presets/MainPreset';
 import setupPluginsExtra from './setupPluginsExtra';
+import { registerChartStateConverter } from '../dashboard/util/chartStateConverter';
 
-import DeckArc from '../explore/controlPanels/DeckArc';
-import DeckGeojson from '../explore/controlPanels/DeckGeojson';
-import DeckGrid from '../explore/controlPanels/DeckGrid';
-import DeckHex from '../explore/controlPanels/DeckHex';
-import DeckMulti from '../explore/controlPanels/DeckMulti';
-import DeckPath from '../explore/controlPanels/DeckPath';
-import DeckPolygon from '../explore/controlPanels/DeckPolygon';
-import DeckScatter from '../explore/controlPanels/DeckScatter';
-import DeckScreengrid from '../explore/controlPanels/DeckScreengrid';
 import Separator from '../explore/controlPanels/Separator';
-import TimeTable from '../explore/controlPanels/TimeTable';
 
 export default function setupPlugins() {
   new MainPreset().register();
 
   // TODO: Remove these shims once the control panel configs are moved into the plugin package.
-  getChartControlPanelRegistry()
-    .registerValue('separator', Separator)
-    .registerValue('time_table', TimeTable)
-    .registerValue('deck_arc', DeckArc)
-    .registerValue('deck_geojson', DeckGeojson)
-    .registerValue('deck_grid', DeckGrid)
-    .registerValue('deck_hex', DeckHex)
-    .registerValue('deck_multi', DeckMulti)
-    .registerValue('deck_path', DeckPath)
-    .registerValue('deck_polygon', DeckPolygon)
-    .registerValue('deck_scatter', DeckScatter)
-    .registerValue('deck_screengrid', DeckScreengrid);
+  getChartControlPanelRegistry().registerValue('separator', Separator);
+
+  // Register chart state converters for stateful charts
+  registerChartStateConverter('ag-grid-table', convertAgGridStateToOwnState);
 
   setupPluginsExtra();
 }

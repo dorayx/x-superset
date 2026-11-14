@@ -17,54 +17,33 @@
  * under the License.
  */
 
-// Keep in sync with superset/views/errors.py
-export const ErrorTypeEnum = {
-  // Frontend errors
-  FRONTEND_CSRF_ERROR: 'FRONTEND_CSRF_ERROR',
-  FRONTEND_NETWORK_ERROR: 'FRONTEND_NETWORK_ERROR',
-  FRONTEND_TIMEOUT_ERROR: 'FRONTEND_TIMEOUT_ERROR',
+import type { ReactNode, ComponentType } from 'react';
+import type { ErrorSource, SupersetError } from '@superset-ui/core';
 
-  // DB Engine errors
-  GENERIC_DB_ENGINE_ERROR: 'GENERIC_DB_ENGINE_ERROR',
+export type ErrorMessageComponentProps<ExtraType = Record<string, any> | null> =
+  {
+    error: SupersetError<ExtraType>;
+    source?: ErrorSource;
+    subtitle?: ReactNode;
+    compact?: boolean;
+    closable?: boolean;
+    errorMitigationFunction?: () => void;
+  };
 
-  // Viz errors
-  VIZ_GET_DF_ERROR: 'VIZ_GET_DF_ERROR',
-  UNKNOWN_DATASOURCE_TYPE_ERROR: 'UNKNOWN_DATASOURCE_TYPE_ERROR',
-  FAILED_FETCHING_DATASOURCE_INFO_ERROR:
-    'FAILED_FETCHING_DATASOURCE_INFO_ERROR',
+export type ErrorMessageComponent = ComponentType<ErrorMessageComponentProps>;
 
-  // Security access errors
-  TABLE_SECURITY_ACCESS_ERROR: 'TABLE_SECURITY_ACCESS_ERROR',
-  DATASOURCE_SECURITY_ACCESS_ERROR: 'DATASOURCE_SECURITY_ACCESS_ERROR',
-  MISSING_OWNERSHIP_ERROR: 'MISSING_OWNERSHIP_ERROR',
-
-  // Other errors
-  BACKEND_TIMEOUT_ERROR: 'BACKEND_TIMEOUT_ERROR',
-} as const;
-
-type ValueOf<T> = T[keyof T];
-
-export type ErrorType = ValueOf<typeof ErrorTypeEnum>;
-
-// Keep in sync with superset/views/errors.py
-export type ErrorLevel = 'info' | 'warning' | 'error';
-
-export type ErrorSource = 'dashboard' | 'explore' | 'sqllab';
-
-export type SupersetError<ExtraType = Record<string, any> | null> = {
-  error_type: ErrorType;
-  extra: ExtraType;
-  level: ErrorLevel;
-  message: string;
-};
-
-export type ErrorMessageComponentProps<
-  ExtraType = Record<string, any> | null
-> = {
-  error: SupersetError<ExtraType>;
-  source?: ErrorSource;
-};
-
-export type ErrorMessageComponent = React.ComponentType<
-  ErrorMessageComponentProps
->;
+export interface ErrorAlertProps {
+  errorType?: string; // Strong text on the first line
+  message: React.ReactNode | string; // Text shown on the first line
+  type?: 'warning' | 'error' | 'info'; // Allows only 'warning' or 'error'
+  description?: React.ReactNode; // Text shown under the first line, not collapsible
+  descriptionDetails?: React.ReactNode | string; // Text shown under the first line, collapsible
+  descriptionDetailsCollapsed?: boolean; // Hides the collapsible section unless "Show more" is clicked, default true
+  messagePre?: boolean; // Uses pre-style on the message, default false
+  descriptionPre?: boolean; // Uses pre-style to break lines, default true
+  compact?: boolean; // Shows the error icon with tooltip and modal, default false
+  children?: React.ReactNode; // Additional content to show in the modal
+  closable?: boolean; // Show close button, default true
+  showIcon?: boolean; // Show icon, default true
+  className?: string;
+}
